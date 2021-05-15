@@ -9,7 +9,7 @@ JS_MACRO_ARGUMENT_NO_WARN
 #include <QProperty>
 
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-#error "QJsonStruct does not support Qt version lesser than 6.0.0."
+#error "QJsonStruct does not support Qt version less than 6.0.0."
 #endif
 
 #define _QJS_PROP_OPTIONAL
@@ -56,22 +56,23 @@ struct QJS_Prop
     operator const T()   const { return value; }
 
     T & operator=(const T& f)           { return set(f); }
+    T & operator=(const T&&f)           { return set(std::move(f)); }
     T & operator=(const QJS_Prop<T>& f) { return set(f.value); }
 
-    QJS_Prop<T> &operator++() { value++; return *this; }
-    QJS_Prop<T> &operator--() { value--; return *this; }
+    QJS_Prop<T> &operator++() { value++; pRealValue.markDirty(); return *this; }
+    QJS_Prop<T> &operator--() { value--; pRealValue.markDirty(); return *this; }
 
     friend bool operator==(const QJS_Prop<T>& left, const T &right) { return   left.value == right ; }
     friend bool operator!=(const QJS_Prop<T>& left, const T &right) { return !(left.value == right); }
 
-    template<typename Y> void operator<<(const Y &another) { value << another; }
-    template<typename Y> void operator>>(const Y &another) { value >> another; }
-    template<typename V> T operator+=(const V &v) { return value += v; }
-    template<typename V> T operator-=(const V &v) { return value -= v; }
-    template<typename V> T operator*=(const V &v) { return value *= v; }
-    template<typename V> T operator/=(const V &v) { return value /= v; }
-    template<typename V> T operator&=(const V &v) { return value &= v; }
-    template<typename V> T operator%=(const V &v) { return value %= v; }
+    template<typename Y> void operator<<(const Y &another) { value << another; pRealValue.markDirty(); }
+    template<typename Y> void operator>>(const Y &another) { value >> another; pRealValue.markDirty(); }
+    template<typename V> T operator+=(const V &v) { value += v; pRealValue.markDirty(); return value; }
+    template<typename V> T operator-=(const V &v) { value -= v; pRealValue.markDirty(); return value; }
+    template<typename V> T operator*=(const V &v) { value *= v; pRealValue.markDirty(); return value; }
+    template<typename V> T operator/=(const V &v) { value /= v; pRealValue.markDirty(); return value; }
+    template<typename V> T operator&=(const V &v) { value &= v; pRealValue.markDirty(); return value; }
+    template<typename V> T operator%=(const V &v) { value %= v; pRealValue.markDirty(); return value; }
 
     // JSON Serialization and Deserialization
     QJsonValue toJson() const { return JsonStructHelper::Serialize(value); }
@@ -100,10 +101,10 @@ struct QJS_Prop
         return pRealValue.onValueChanged(std::function{ [=]() { target->setProperty(target_prop, pRealValue.value()); } });
     }
 
-    template<typename TSender, typename Func>
-    inline void WBindTo(const TSender *target, const char *target_prop, Func target_slot)
+    template<typename TTarget, typename Func>
+    inline void WBindTo(const TTarget *target, const char *target_prop, Func target_slot)
     {
-        static_assert(std::is_base_of_v<QObject, TSender>, "Wrong Usage");
+        static_assert(std::is_base_of_v<QObject, TTarget>, "Wrong Usage");
         QObject::connect(target, target_slot, [=]() { *this = ((QObject *) target)->property(target_prop).value<T>(); });
     }
 };
