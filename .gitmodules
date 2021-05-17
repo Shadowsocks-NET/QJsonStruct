@@ -1,0 +1,3 @@
+[submodule "lsf"]
+	path = lsf
+	url = git@github.com:dayu521/lsf.git

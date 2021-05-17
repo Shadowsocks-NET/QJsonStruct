@@ -1,3 +1,4 @@
+add_subdirectory(lsf)
 cmake_minimum_required(VERSION 3.5)
 
 project(QJsonStruct LANGUAGES CXX)
