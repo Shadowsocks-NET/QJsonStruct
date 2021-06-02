@@ -4,21 +4,15 @@
 #include "JsonConvertMacros.hpp"
 
 JS_MACRO_ARGUMENT_NO_WARN
-#include <QMutex>
 #include <QObject>
-#include <QProperty>
-
-#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-#error "QJsonStruct does not support Qt version less than 6.0.0."
-#endif
 
 #define _QJS_PROP_OPTIONAL
 #define _QJS_PROP_REQUIRED REQUIRED
 
-#define _QJS_PROP_IMPL(TYPE, NAME, DEFAULT, ...)                                                                                                     \
-  public:                                                                                                                                            \
-    Q_SIGNAL void on_##NAME##_changed();                                                                                                             \
-    QJS_Prop<TYPE> JS_F(NAME){ [this]() { on_##NAME##_changed(); }, TYPE{ DEFAULT } };                                                               \
+#define _QJS_PROP_IMPL(TYPE, NAME, DEFAULT, ...)                                                                                                                         \
+  public:                                                                                                                                                                \
+    Q_SIGNAL void on_##NAME##_changed(const TYPE &);                                                                                                                     \
+    QJS_Prop<ThisType, TYPE> JS_F(NAME){ this, &ThisType::on_##NAME##_changed, TYPE{ DEFAULT } };                                                                        \
     Q_PROPERTY(TYPE NAME MEMBER JS_F(NAME) NOTIFY on_##NAME##_changed __VA_ARGS__)
 
 // ========================================================================================================
@@ -27,21 +21,18 @@ JS_MACRO_ARGUMENT_NO_WARN
 //
 // ========================================================================================================
 
-template<typename T>
+template<class P, typename T>
 struct QJS_Prop
 {
   private:
-    T &set(T v)
-    {
-        if (value == v)
-            return value;
-        value = v;
-        pRealValue.markDirty();
-        onChanged();
-        return value;
-    }
+    P *parent;
+    void (P::*m_ChangedSignal)(const T &);
+    T value;
+    const T defaultValue;
 
   public:
+    QJS_Prop(P *parent, void (P::*changedSignal)(const T &), const T &def) : parent(parent), m_ChangedSignal(changedSignal), value(def), defaultValue(def){};
+
     // clang-format off
           T* operator->()       { return &value; }
     const T* operator->() const { return &value; }
@@ -57,55 +48,87 @@ struct QJS_Prop
 
     T & operator=(const T& f)           { return set(f); }
     T & operator=(const T&&f)           { return set(std::move(f)); }
-    T & operator=(const QJS_Prop<T>& f) { return set(f.value); }
+    T & operator=(const QJS_Prop<P, T> &f) { return set(f.value); }
 
-    QJS_Prop<T> &operator++() { value++; pRealValue.markDirty(); return *this; }
-    QJS_Prop<T> &operator--() { value--; pRealValue.markDirty(); return *this; }
+    template<class PP> T & operator=(const QJS_Prop<PP, T>& f) { return set(f.value); }
+    template<class PP> T & operator=(const T) { value++; return *this; }
 
-    friend bool operator==(const QJS_Prop<T>& left, const T &right) { return   left.value == right ; }
-    friend bool operator!=(const QJS_Prop<T>& left, const T &right) { return !(left.value == right); }
+    QJS_Prop<P, T> &operator++() { value++; return *this; }
+    QJS_Prop<P, T> &operator--() { value--; return *this; }
 
-    template<typename Y> void operator<<(const Y &another) { value << another; pRealValue.markDirty(); }
-    template<typename Y> void operator>>(const Y &another) { value >> another; pRealValue.markDirty(); }
-    template<typename V> T operator+=(const V &v) { value += v; pRealValue.markDirty(); return value; }
-    template<typename V> T operator-=(const V &v) { value -= v; pRealValue.markDirty(); return value; }
-    template<typename V> T operator*=(const V &v) { value *= v; pRealValue.markDirty(); return value; }
-    template<typename V> T operator/=(const V &v) { value /= v; pRealValue.markDirty(); return value; }
-    template<typename V> T operator&=(const V &v) { value &= v; pRealValue.markDirty(); return value; }
-    template<typename V> T operator%=(const V &v) { value %= v; pRealValue.markDirty(); return value; }
 
-    // JSON Serialization and Deserialization
+    template<typename Y> void operator<<(const Y &another) { value << another; }
+    template<typename Y> void operator>>(const Y &another) { value >> another; }
+    template<typename V> T operator+=(const V &v) { value += v; return value; }
+    template<typename V> T operator-=(const V &v) { value -= v; return value; }
+    template<typename V> T operator*=(const V &v) { value *= v; return value; }
+    template<typename V> T operator/=(const V &v) { value /= v; return value; }
+    template<typename V> T operator&=(const V &v) { value &= v; return value; }
+    template<typename V> T operator%=(const V &v) { value %= v; return value; }
+
     QJsonValue toJson() const { return JsonStructHelper::Serialize(value); }
     void loadJson(const QJsonValue &val) { JsonStructHelper::Deserialize(value, val); }
     // clang-format on
 
-  private:
-    T value;
-    const T defaultValue;
-    QProperty<T> pRealValue{ [this]() { return value; } };
-    std::function<void(void)> onChanged;
-
-  public:
-    typedef T content_type;
-    QJS_Prop(std::function<void(void)> callback, const T &val) : value(val), defaultValue(val), onChanged(callback){};
-    virtual ~QJS_Prop() = default;
+    // clang-format off
+    bool operator==(const T& val) const { return val == value ; }
+    bool operator!=(const T& val) const { return val != value ; }
+    template<typename PP> bool operator==(const QJS_Prop<PP, T>& left) const { return   left.value == value ; }
+    template<typename PP> bool operator!=(const QJS_Prop<PP, T>& left) const { return !(left.value == value); }
+    // clang-format on
 
     bool isDefault() const
     {
         return value == defaultValue;
     }
 
-    QPropertyChangeHandler<std::function<void()>> RBindTo(QObject *target, const char *target_prop)
+  private:
+    T &set(const T &v)
     {
-        target->setProperty(target_prop, pRealValue.value());
-        return pRealValue.onValueChanged(std::function{ [=]() { target->setProperty(target_prop, pRealValue.value()); } });
+        if (value == v)
+            return value;
+        value = v;
+        (parent->*m_ChangedSignal)(v);
+        return value;
+    }
+
+  public:
+    ///
+    /// \brief Change the value of target property when this value has changed.
+    ///
+    template<typename TTarget>
+    inline void ReadBind(TTarget *target, const char *target_prop)
+    {
+        static_assert(std::is_base_of_v<QObject, TTarget>, "Wrong Usage: Target must be a QObject");
+
+        // Firstly, sync target properties.
+        ((QObject *) target)->setProperty(target_prop, value);
+
+        QObject::connect(parent, m_ChangedSignal, [=]() {
+            if (auto obj = dynamic_cast<QObject *>(target); obj)
+                obj->setProperty(target_prop, value);
+        });
+    }
+
+    ///
+    /// \brief Change the value of current property of something happened in target, triggered by target signal
+    ///
+    template<typename TTarget, typename Func>
+    inline void WriteBind(const TTarget *target, const char *target_prop, Func trigger_signal)
+    {
+        static_assert(std::is_base_of_v<QObject, TTarget>, "Wrong Usage: Target must be a QObject");
+
+        QObject::connect(target, trigger_signal, [=]() {
+            if (auto obj = dynamic_cast<const QObject *>(target); obj)
+                set(obj->property(target_prop).value<T>());
+        });
     }
 
     template<typename TTarget, typename Func>
-    inline void WBindTo(const TTarget *target, const char *target_prop, Func target_slot)
+    inline void ReadWriteBind(TTarget *target, const char *target_prop, Func trigger_signal)
     {
-        static_assert(std::is_base_of_v<QObject, TTarget>, "Wrong Usage");
-        QObject::connect(target, target_slot, [=]() { *this = ((QObject *) target)->property(target_prop).value<T>(); });
+        ReadBind(target, target_prop);
+        WriteBind(target, target_prop, trigger_signal);
     }
 };
 
@@ -119,25 +142,18 @@ struct QJS_Prop
 #define __QJS_CTOR_B(base) base()
 #define __QJS_CTOR_F(name)
 
-#define QJS_FUNCTION(CLASS, ...)                                                                                                                     \
-  public:                                                                                                                                            \
-    QJS_FUNCTION_DEFAULT_CONSTRUCTOR(CLASS, __VA_ARGS__)                                                                                             \
-    QJS_FUNC_COPY(CLASS, __VA_ARGS__);                                                                                                               \
-    QJS_FUNC_JSON(CLASS, __VA_ARGS__);                                                                                                               \
+#define QJS_FUNCTION(CLASS, ...)                                                                                                                                         \
+  private:                                                                                                                                                               \
+    using ThisType = CLASS;                                                                                                                                              \
+                                                                                                                                                                         \
+  public:                                                                                                                                                                \
+    QJS_FUNCTION_DEFAULT_CONSTRUCTOR(CLASS, __VA_ARGS__)                                                                                                                 \
+    QJS_FUNC_COPY(CLASS, __VA_ARGS__);                                                                                                                                   \
+    QJS_FUNC_JSON(CLASS, __VA_ARGS__);                                                                                                                                   \
     QJS_FUNC_COMP(CLASS, __VA_ARGS__);
 
-#define QJS_FUNCTION_NODCTOR(CLASS, ...)                                                                                                             \
-  public:                                                                                                                                            \
-    QJS_FUNC_COPY(CLASS, __VA_ARGS__);                                                                                                               \
-    QJS_FUNC_JSON(CLASS, __VA_ARGS__);                                                                                                               \
+#define QJS_FUNCTION_NODCTOR(CLASS, ...)                                                                                                                                 \
+  public:                                                                                                                                                                \
+    QJS_FUNC_COPY(CLASS, __VA_ARGS__);                                                                                                                                   \
+    QJS_FUNC_JSON(CLASS, __VA_ARGS__);                                                                                                                                   \
     QJS_FUNC_COMP(CLASS, __VA_ARGS__);
-
-#define QJS_RBINDING(sprop, target, tprop) property_bindings.push_back(sprop.RBindTo(target, tprop));
-#define QJS_WBINDING(sprop, target, tprop, tslot) sprop.WBindTo(target, tprop, tslot);
-
-#define QJS_RWBINDING(source_prop, target, target_prop, target_slot)                                                                                 \
-    QJS_RBINDING(source_prop, target, target_prop);                                                                                                  \
-    QJS_WBINDING(source_prop, target, target_prop, target_slot);
-
-#define QJS_BINDING_CLEAR property_bindings.clear();
-#define QJS_BINDING_HELPERS std::list<QPropertyChangeHandler<std::function<void()>>> property_bindings;
